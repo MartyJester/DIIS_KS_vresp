@@ -1,0 +1,12 @@
+[project]
+name = "diis-ks-vresp"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "jax>=0.10.2",
+    "matplotlib>=3.11.0",
+    "numpy>=2.5.0",
+    "pyscf>=2.13.1",
+    "scipy>=1.18.0",
+    "tensorflow-probability>=0.25.0",
+]
