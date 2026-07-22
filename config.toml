@@ -1,0 +1,55 @@
+# Settings for the KS-SCE 1D calculation (read by main_fixed.py).
+#
+# Run:  python main_fixed.py [other_config.toml] [--show]
+
+[system]
+N = 2                          # electrons (the energy expressions assume 2)
+interaction = "softCoulomb"    # softCoulomb | absCoulomb | wireCoulomb
+b = 0.6                        # softening of the e-e interaction
+
+[wells]
+# Two external wells at -R and +R:  v_ext(x) = -sum_i depth_i * w(|x - X_i|, softening_i).
+# Equal softening and depth on both sites = homonuclear, otherwise heteronuclear.
+R = 10.0
+softening = [2.25, 0.7]        # per-well softening (well width)
+depth = [1.0, 1.0]             # per-well prefactor ("nuclear charge", well depth)
+
+[grid]
+nbPts = 600                    # number of grid points
+# L = 160.0                    # box length; default 8 * (R + 10)
+
+[functionals]
+# Hxc approximations to run, in order.  Available: "SCE", "LDA", "Hartree", "EXX".
+run = ["SCE", "LDA", "Hartree", "EXX"]
+
+[scf]                          # inner DIIS SCF (fixed occupations)
+max_cycle = 300
+conv_tol = 1e-10               # target on the density change
+conv_accept = 1e-6             # acceptance threshold for the best iterate
+diis_space = 8                 # size of the DIIS subspace
+diis_engage = 1e-3             # engage DIIS once drho falls below this
+mixing = 0.2                   # linear density mixing before DIIS engages
+
+[scf.aufbau]                   # closed-shell aufbau SCF (LDA/Hartree/EXX)
+max_cycle = 500
+mixing = 0.1
+level_shift = 0.3              # virtual-level shift against HOMO/LUMO flipping
+
+[scf.ensemble]                 # SCE outer loop over the charge split q
+q_step = 0.25                  # coarse scan of q in [0, N]
+align_tol = 1e-5               # bisection threshold on the q bracket
+
+[output]
+figure = "ks_comparison.png"   # comparison figure; relative paths are
+                               # resolved next to main_fixed.py
+
+[stretch]
+# Settings for homonuclear_stretch.py (ground state vs bond distance).
+# The [wells] section above is ignored there: these wells are used instead.
+distances = [2.0, 4.0, 10.0]   # bond distances R (wells at -R and +R)
+labels = ["covalent bond", "transition", "dissociated"]   # one per distance
+softening = [0.7, 0.7]         # per-well softening; identical wells = homonuclear
+depth = [1.0, 1.0]             # per-well depth
+dx = 0.2667                    # grid spacing, kept fixed while the box grows
+functionals = ["SCE", "LDA", "Hartree", "EXX"]
+figure = "homonuclear_stretch.png"

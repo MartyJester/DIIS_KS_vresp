@@ -31,15 +31,19 @@ The stable formulation used here:
 The weakly-correlated functionals (LDA, Hartree, EXX) go through a standard
 aufbau DIIS SCF with damping and a level shift instead.
 
-The script runs every functional in `functionals`, prints a comparison
-table and overlays the densities and Hxc potentials in one figure
-(ks_comparison.png).
+All settings live in config.toml next to this script: geometry (per-well
+softening and depth, so homo- and heteronuclear setups are both one edit
+away), grid, e-e interaction and the list of Hxc functionals to run
+("SCE", "LDA", "Hartree", "EXX").  The script runs every requested
+functional, prints a comparison table and overlays the densities and Hxc
+potentials in one figure (ks_comparison.png).
 
-Run:  python main_fixed.py [--show]
+Run:  python main_fixed.py [other_config.toml] [--show]
 """
 
 import os
 import sys
+import tomllib
 
 import numpy as np
 import scipy.linalg
@@ -54,52 +58,105 @@ import OneDKSSCE
 np.set_printoptions(precision=6)
 
 # ---------------------------------------------------------------------------
-# Parameters
+# Configuration (config.toml)
 # ---------------------------------------------------------------------------
-nbPts = 600                     # number of grid points
-b = 0.6                         # softening parameter of the e-e interaction
-wint = OneDKSSCE.softCoulomb    # softCoulomb / absCoulomb / wireCoulomb
-R = 10.0                        # nuclei at -R and +R
-L = 8 * (R + 10)                # box length
-site_softening = [2.25, 0.7]    # softening of the external wells at -R and +R
-N = 2                           # electrons
-functionals = ("SCE", "LDA", "Hartree")   # runs each; "EXX" also available
+AVAILABLE_FUNCTIONALS = ("SCE", "LDA", "Hartree", "EXX")
+AVAILABLE_INTERACTIONS = ("softCoulomb", "absCoulomb", "wireCoulomb")
+DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "config.toml")
+
 functional = "SCE"              # current functional (set by main)
 
-max_cycle = 300                 # inner SCF cycles
-conv_tol = 1e-10                # inner SCF: target on the density change
-conv_accept = 1e-6              # inner SCF: acceptance threshold for the best
-                                # iterate; exactly at the level degeneracy the
-                                # grid SCE potential limits self-consistency
-                                # to ~1e-7 in the density
-diis_space = 8                  # size of the DIIS subspace
-diis_engage = 1e-3              # engage DIIS once drho falls below this;
-                                # in the earlier nonlinear regime plain damping
-                                # is more robust, in the linear regime DIIS
-                                # kills the soft charge-transfer mode
-mixing = 0.2                    # linear density mixing before DIIS engages
 
-# aufbau SCF (Hartree/EXX only)
-aufbau_max_cycle = 500
-aufbau_mixing = 0.1
-level_shift = 0.3               # virtual-level shift; keeps the occupied
-                                # orbital from flipping when HOMO and LUMO
-                                # get close (does not change the fixed point)
-q_scan = np.arange(0.0, N + 1e-9, 0.25)   # coarse scan of the charge split
-align_tol = 1e-5                # outer bisection: threshold on the q bracket
-                                # (E is stationary at q*, so the E error is
-                                # ~ curvature * align_tol^2 ~ 1e-10)
+def load_config(path=DEFAULT_CONFIG):
+    """Read a TOML settings file, validate it and (re)build the module
+    state.  Every parameter of the calculation is set here."""
+    global nbPts, b, wint, N, functionals
+    global max_cycle, conv_tol, conv_accept, diis_space, diis_engage, mixing
+    global aufbau_max_cycle, aufbau_mixing, level_shift, q_scan, align_tol
 
-assert N == 2, "the energy expressions assume a 2-electron system"
+    with open(path, "rb") as f:
+        cfg = tomllib.load(f)
+
+    system = cfg["system"]
+    N = system["N"]
+    assert N == 2, "the energy expressions assume a 2-electron system"
+    b = system["b"]
+    interaction = system["interaction"]
+    if interaction not in AVAILABLE_INTERACTIONS:
+        raise ValueError(f"unknown interaction {interaction!r}; "
+                         f"choose from {AVAILABLE_INTERACTIONS}")
+    wint = getattr(OneDKSSCE, interaction)
+
+    functionals = tuple(cfg["functionals"]["run"])
+    unknown = [f for f in functionals if f not in AVAILABLE_FUNCTIONALS]
+    if unknown:
+        raise ValueError(f"unknown functional(s) {unknown}; "
+                         f"choose from {AVAILABLE_FUNCTIONALS}")
+
+    wells = cfg["wells"]
+    if not (len(wells["softening"]) == len(wells["depth"]) == 2):
+        raise ValueError("wells.softening and wells.depth must have 2 entries "
+                         "(wells at -R and +R)")
+
+    grid = cfg["grid"]
+    nbPts = grid["nbPts"]
+
+    scf = cfg["scf"]
+    max_cycle = scf["max_cycle"]        # inner SCF cycles
+    conv_tol = scf["conv_tol"]          # target on the density change
+    conv_accept = scf["conv_accept"]    # acceptance threshold for the best
+                                        # iterate; exactly at the level
+                                        # degeneracy the grid SCE potential
+                                        # limits self-consistency to ~1e-7
+    diis_space = scf["diis_space"]
+    diis_engage = scf["diis_engage"]    # engage DIIS below this drho; in the
+                                        # earlier nonlinear regime plain
+                                        # damping is more robust, in the
+                                        # linear regime DIIS kills the soft
+                                        # charge-transfer mode
+    mixing = scf["mixing"]              # linear mixing before DIIS engages
+
+    aufbau = scf["aufbau"]              # closed-shell SCF (LDA/Hartree/EXX)
+    aufbau_max_cycle = aufbau["max_cycle"]
+    aufbau_mixing = aufbau["mixing"]
+    level_shift = aufbau["level_shift"] # keeps the occupied orbital from
+                                        # flipping when HOMO and LUMO get
+                                        # close (does not move the fixed point)
+
+    ensemble = scf["ensemble"]          # SCE outer loop over the charge split
+    q_scan = np.arange(0.0, N + 1e-9, ensemble["q_step"])
+    align_tol = ensemble["align_tol"]   # bisection threshold on the q bracket
+                                        # (E is stationary at q*, so the E
+                                        # error is ~ curvature * align_tol^2)
+
+    global out_figure
+    out_figure = cfg.get("output", {}).get("figure", "ks_comparison.png")
+
+    # full parsed file, so companion scripts can read their own sections
+    global config
+    config = cfg
+
+    set_geometry(R_new=wells["R"], site_softening_new=wells["softening"],
+                 site_depth_new=wells["depth"], L_new=grid.get("L"))
+
+
+def well_character():
+    """'homonuclear' if the two wells are identical, else 'heteronuclear'."""
+    return ("homonuclear"
+            if site_softening[0] == site_softening[1]
+            and site_depth[0] == site_depth[1]
+            else "heteronuclear")
 
 # ---------------------------------------------------------------------------
 # Grid and one-body Hamiltonian
 # ---------------------------------------------------------------------------
-def set_geometry(R_new=None, site_softening_new=None, nbPts_new=None, L_new=None):
+def set_geometry(R_new=None, site_softening_new=None, nbPts_new=None, L_new=None,
+                 site_depth_new=None):
     """(Re)build the grid-dependent module state.  Companion scripts call
     this to change the geometry (e.g. to stretch the molecule)."""
-    global R, site_softening, nbPts, L, x, delta, weights, kin, vext, h1
-    global ref_left, ref_right, _coulomb_matrix
+    global R, site_softening, site_depth, nbPts, L, x, delta, weights
+    global kin, vext, h1, ref_left, ref_right, _coulomb_matrix
 
     if R_new is not None:
         R = R_new
@@ -108,6 +165,8 @@ def set_geometry(R_new=None, site_softening_new=None, nbPts_new=None, L_new=None
         L = L_new
     if site_softening_new is not None:
         site_softening = site_softening_new
+    if site_depth_new is not None:
+        site_depth = site_depth_new
     if nbPts_new is not None:
         nbPts = nbPts_new
 
@@ -116,19 +175,23 @@ def set_geometry(R_new=None, site_softening_new=None, nbPts_new=None, L_new=None
     weights = np.full(nbPts, delta)
 
     kin = OneDKSSCE.kinetic(nbPts, delta, 1)
-    vext = OneDKSSCE.vExtMol_reduced(x, [-R, R], wint, site_softening)
+    # v_ext(x) = -sum_i Z_i w(|x - X_i|, b_i) with wells at -R and +R
+    wells = list(zip((-R, R), site_softening, site_depth))
+    vext = -sum(Z * np.asarray(wint(np.abs(x - X), bs)) for X, bs, Z in wells)
     h1 = kin + np.diag(vext)
     _coulomb_matrix = None
 
     # Ground states of the isolated wells: initial guess and references for
     # tracking the left/right frontier orbitals through the SCF.
-    _, C = scipy.linalg.eigh(kin - np.diag(np.asarray(wint(np.abs(x + R), site_softening[0]))))
-    ref_left = C[:, 0]
-    _, C = scipy.linalg.eigh(kin - np.diag(np.asarray(wint(np.abs(x - R), site_softening[1]))))
-    ref_right = C[:, 0]
+    refs = []
+    for X, bs, Z in wells:
+        _, C = scipy.linalg.eigh(kin - np.diag(Z * np.asarray(wint(np.abs(x - X), bs))))
+        refs.append(C[:, 0])
+    ref_left, ref_right = refs
 
 
-set_geometry()
+site_depth = [1.0, 1.0]
+load_config()
 
 # ---------------------------------------------------------------------------
 # Hxc potential and energies
@@ -342,6 +405,8 @@ def scf_aufbau(verbose=False):
 # ---------------------------------------------------------------------------
 def run():
     print(f"KS-{functional}: {nbPts} points, L = {L}, R = {R}, b = {b}, N = {N}")
+    print(f"Wells at +/-R ({well_character()}): softening {list(site_softening)}, "
+          f"depth {list(site_depth)}")
 
     if functional != "SCE":
         res = scf_aufbau()
@@ -438,8 +503,7 @@ def plot_comparison(results, show):
         ax.grid()
         ax.legend()
     fig.tight_layout()
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       'ks_comparison.png')
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), out_figure)
     fig.savefig(out, dpi=150)
     print(f"\nComparison plot saved to {out}")
     if show:
@@ -470,4 +534,7 @@ def main(show=False):
 
 
 if __name__ == "__main__":
+    args = [a for a in sys.argv[1:] if a != "--show"]
+    if args:
+        load_config(args[0])
     main(show="--show" in sys.argv)
