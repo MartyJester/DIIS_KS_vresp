@@ -429,18 +429,12 @@ def scf_aufbau(verbose=False):
 # ---------------------------------------------------------------------------
 # Outer loop: find the charge split that aligns the frontier levels
 # ---------------------------------------------------------------------------
-def run():
-    print(f"KS-{functional}: {nbPts} points, L = {L}, R = {R}, b = {b}, N = {N}")
-    print(f"Wells at +/-R ({well_character()}): softening {list(site_softening)}, "
-          f"depth {list(site_depth)}")
-
-    if functional not in SCE_FAMILY:
-        res = scf_aufbau()
-        state = "converged" if res["converged"] else "NOT converged"
-        print(f"\nAufbau SCF {state} in {res['cycles']} cycles, "
-              f"drho = {res['drho']:.1e}")
-        return res
-
+def scf_ensemble():
+    """SCE-family ensemble solution: scan the charge split q, then bisect
+    eps_L(q) - eps_R(q) to the aligned point (Janak).  Falls back to the
+    best integer occupation when the levels never align, to the best
+    bracket endpoint when a bisection step stops converging, and to None
+    when nothing in the scan converges at all."""
     print(f"\nScanning the charge split q (electrons in the left well):")
     print(f"{'q':>6} {'E':>16} {'eps_L':>10} {'eps_R':>10} {'eps_L-eps_R':>12} {'cycles':>7}")
 
@@ -456,7 +450,7 @@ def run():
               f"{res['eps_l'] - res['eps_r']:12.5f} {res['cycles']:7d}")
 
     if not scan:
-        raise RuntimeError("no converged SCF in the q scan")
+        return None
 
     # bracket a sign change of eps_L - eps_R around the scan minimum
     gaps = [r["eps_l"] - r["eps_r"] for r in scan]
@@ -490,6 +484,24 @@ def run():
     print(f"{state}: q* = {best['q']:.8f}, eps_L - eps_R = "
           f"{best['eps_l'] - best['eps_r']: .3e}")
     return best
+
+
+def run():
+    print(f"KS-{functional}: {nbPts} points, L = {L}, R = {R}, b = {b}, N = {N}")
+    print(f"Wells at +/-R ({well_character()}): softening {list(site_softening)}, "
+          f"depth {list(site_depth)}")
+
+    if functional not in SCE_FAMILY:
+        res = scf_aufbau()
+        state = "converged" if res["converged"] else "NOT converged"
+        print(f"\nAufbau SCF {state} in {res['cycles']} cycles, "
+              f"drho = {res['drho']:.1e}")
+        return res
+
+    res = scf_ensemble()
+    if res is None:
+        raise RuntimeError("no converged SCF in the q scan")
+    return res
 
 
 def report(res):

@@ -49,13 +49,26 @@ figure = "ks_comparison.png"   # comparison figure; relative paths are
 check_figure = "schrodinger_check.png"   # H*phi/phi board (diagnostic)
 
 [stretch]
-# Settings for homonuclear_stretch.py (ground state vs bond distance).
-# The [wells] section above is ignored there: these wells are used instead.
+# Settings for stretch.py (ground state vs bond distance).  The [wells]
+# section above is ignored there.  Plain keys here are defaults shared by
+# every [[stretch.studies]] entry below; each study can override any of
+# them.  Without a studies array the flat section itself is the one study.
 distances = [2.0, 4.0, 10.0]   # bond distances R (wells at -R and +R)
-labels = ["covalent bond", "transition", "dissociated"]   # one per distance
-softening = [0.7, 0.7]         # per-well softening; identical wells = homonuclear
-depth = [1.0, 1.0]             # per-well depth
 dx = 0.2667                    # grid spacing, kept fixed while the box grows
 functionals = ["SCE", "vcond", "vresp", "LDA", "Hartree"]
+
+[[stretch.studies]]
+name = "homonuclear"           # identical wells: ensemble split q = 1 by symmetry
+labels = ["covalent bond", "transition", "dissociated"]   # one per distance
+softening = [0.7, 0.7]         # per-well softening
+depth = [1.0, 1.0]             # per-well depth
 figure = "homonuclear_stretch.png"
 check_figure = "homonuclear_stretch_check.png"   # H*phi/phi board (diagnostic)
+
+[[stretch.studies]]
+name = "heteronuclear"         # unequal wells: SCE-family q* from level alignment
+labels = ["short bond", "transition", "dissociated"]
+softening = [2.25, 0.7]        # same wells as the [wells] run above
+depth = [1.0, 1.0]
+figure = "heteronuclear_stretch.png"
+check_figure = "heteronuclear_stretch_check.png"
