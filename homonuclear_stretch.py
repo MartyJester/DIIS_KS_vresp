@@ -25,6 +25,10 @@ solution for the homonuclear molecule:
 
 Output: 2 x n_distances figure (top: densities, bottom: Hxc potentials),
 one column per distance, occupations of each solution in the legend.
+A second board (functionals x distances) shows the Schroedinger check of
+main_fixed.py — H phi / phi from the Hamiltonian rebuilt out of the
+converged orbitals — for every solution; diagnostic only, nothing acts
+on it.
 
 Run:  python homonuclear_stretch.py [other_config.toml] [--show]
 """
@@ -50,6 +54,7 @@ def stretch_settings():
         dx=s.get("dx", 0.2667),        # grid spacing, fixed while L grows
         functionals=tuple(s.get("functionals", m.functionals)),
         figure=s.get("figure", "homonuclear_stretch.png"),
+        check_figure=s.get("check_figure", "homonuclear_stretch_check.png"),
     )
     labels = s.get("labels", [])
     settings["labels"] = (labels if len(labels) == len(settings["distances"])
@@ -84,7 +89,48 @@ def solve(functional):
     best = min(candidates, key=lambda r: r["E"])
     best["functional"] = functional
     best["vhxc"] = m.hxc_potential(best["rho"])
+    # the check needs the current geometry: compute it here, plot later
+    best["check"] = m.schrodinger_check_data(best)
     return best
+
+
+def plot_check(columns, s, show):
+    """One board with every Schroedinger check: functionals x distances."""
+    functionals = s["functionals"]
+    fig, axes = plt.subplots(len(functionals), len(columns),
+                             figsize=(4.6 * len(columns),
+                                      2.9 * len(functionals)),
+                             squeeze=False)
+    for icol, col in enumerate(columns):
+        for irow, functional in enumerate(functionals):
+            ax = axes[irow, icol]
+            res = next((r for r in col["results"]
+                        if r["functional"] == functional), None)
+            if res is None:
+                ax.text(0.5, 0.5, f"{functional}: no converged solution",
+                        ha='center', va='center', transform=ax.transAxes)
+                ax.set_axis_off()
+                continue
+            m.draw_check_panel(ax, res, res["check"])
+            R = col["R"]
+            ax.set_xlim(-R - 14, R + 14)
+            ax.set_title(f'R = {R:g}: ' + ax.get_title(), fontsize=9,
+                         color=ax.title.get_color())
+    for ax in axes[-1, :]:
+        ax.set_xlabel('x')
+    for ax in axes[:, 0]:
+        ax.set_ylabel(r'$H\phi/\phi$')
+    fig.suptitle(r'Schroedinger check: $H\phi/\phi$ from the rebuilt '
+                 r'Hamiltonian (flat at $\epsilon$ = converged; '
+                 rf'y range fixed to $\epsilon \pm$ {m.CHECK_TOL:g})',
+                 fontsize=11)
+    fig.tight_layout()
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       s["check_figure"])
+    fig.savefig(out, dpi=150)
+    print(f"Schroedinger check board saved to {out}")
+    if show:
+        plt.show()
 
 
 def main(show=False):
@@ -141,6 +187,7 @@ def main(show=False):
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)), s["figure"])
     fig.savefig(out, dpi=150)
     print(f"\nPlot saved to {out}")
+    plot_check(columns, s, show)
     if show:
         plt.show()
 

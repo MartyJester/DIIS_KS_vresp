@@ -34,9 +34,21 @@ aufbau DIIS SCF with damping and a level shift instead.
 All settings live in config.toml next to this script: geometry (per-well
 softening and depth, so homo- and heteronuclear setups are both one edit
 away), grid, e-e interaction and the list of Hxc functionals to run
-("SCE", "LDA", "Hartree", "EXX").  The script runs every requested
-functional, prints a comparison table and overlays the densities and Hxc
-potentials in one figure (ks_comparison.png).
+("SCE", "vcond", "vresp", "LDA", "Hartree", "EXX").  "vcond" is the SCE
+conditional potential w(|x - f(x)|) and "vresp" the SCE response potential
+vSCE - vcond; neither is a genuine Hxc potential, they are run as the sole
+Hxc component to inspect the effect of each piece of vSCE, with the SCE
+interaction functional kept as the (non-variational) energy expression.
+The script runs every requested functional, prints a comparison table and
+overlays the densities and Hxc potentials in one figure (ks_comparison.png).
+
+As a final sanity check on the SCF, every converged orbital is verified to
+solve its own Schroedinger equation: the Hamiltonian is rebuilt from the
+converged orbitals (density -> Hxc potential -> H) and H phi / phi is
+plotted pointwise for each occupied orbital, one panel per functional, in a
+single board (schrodinger_check.png).  For a true self-consistent
+eigenstate the curve is flat at the orbital energy wherever the orbital is
+non-negligible.  The check is purely diagnostic: nothing acts on it.
 
 Run:  python main_fixed.py [other_config.toml] [--show]
 """
@@ -60,7 +72,8 @@ np.set_printoptions(precision=6)
 # ---------------------------------------------------------------------------
 # Configuration (config.toml)
 # ---------------------------------------------------------------------------
-AVAILABLE_FUNCTIONALS = ("SCE", "LDA", "Hartree", "EXX")
+AVAILABLE_FUNCTIONALS = ("SCE", "vcond", "vresp", "LDA", "Hartree", "EXX")
+SCE_FAMILY = ("SCE", "vcond", "vresp")   # ensemble machinery + SCE energy
 AVAILABLE_INTERACTIONS = ("softCoulomb", "absCoulomb", "wireCoulomb")
 DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "config.toml")
@@ -130,8 +143,10 @@ def load_config(path=DEFAULT_CONFIG):
                                         # (E is stationary at q*, so the E
                                         # error is ~ curvature * align_tol^2)
 
-    global out_figure
+    global out_figure, check_figure
     out_figure = cfg.get("output", {}).get("figure", "ks_comparison.png")
+    check_figure = cfg.get("output", {}).get("check_figure",
+                                             "schrodinger_check.png")
 
     # full parsed file, so companion scripts can read their own sections
     global config
@@ -229,9 +244,17 @@ def lda_xc_energy(rho):
 
 def hxc_potential(rho):
     """Hxc potential on the grid (1D array) for the density rho."""
-    if functional == "SCE":
-        return np.asarray(
-            OneDKSSCE.compute_kssce_potential_gauge_zero(rho, weights, x, N, wint, b))
+    if functional in SCE_FAMILY:
+        # vSCE = vcond + vresp: "vcond" and "vresp" run one component alone
+        if functional == "vcond":
+            return np.asarray(OneDKSSCE.compute_vcondsce_potential_gauge_zero(
+                rho, weights, x, N, wint, b))
+        vsce = np.asarray(OneDKSSCE.compute_kssce_potential_gauge_zero(
+            rho, weights, x, N, wint, b))
+        if functional == "vresp":
+            return vsce - np.asarray(OneDKSSCE.compute_vcondsce_potential_gauge_zero(
+                rho, weights, x, N, wint, b))
+        return vsce
     v = coulomb_matrix() @ (weights * rho)
     v -= 0.5 * (v[0] + v[-1])
     if functional == "EXX":
@@ -258,7 +281,10 @@ def total_energy(orb_left, orb_right, q, rho):
     """Total energy from the two occupied orbitals with occupations (q, N-q)."""
     ts = q * (orb_left @ kin @ orb_left) + (N - q) * (orb_right @ kin @ orb_right)
     e_ext = np.sum(weights * vext * rho)
-    if functional == "SCE":
+    if functional in SCE_FAMILY:
+        # for vcond/vresp the potential is not the functional derivative of
+        # any energy: the SCE interaction energy at the SCF density is
+        # reported so the columns stay comparable across the family
         e_hxc = sce_energy(rho)
     else:
         p = weights * rho
@@ -408,7 +434,7 @@ def run():
     print(f"Wells at +/-R ({well_character()}): softening {list(site_softening)}, "
           f"depth {list(site_depth)}")
 
-    if functional != "SCE":
+    if functional not in SCE_FAMILY:
         res = scf_aufbau()
         state = "converged" if res["converged"] else "NOT converged"
         print(f"\nAufbau SCF {state} in {res['cycles']} cycles, "
@@ -444,17 +470,24 @@ def run():
 
     lo, hi = bracket
     print(f"\nLevel alignment bracketed in q = [{lo['q']}, {hi['q']}]; bisecting...")
+    aligned = True
     while hi["q"] - lo["q"] > align_tol:
         q_mid = 0.5 * (lo["q"] + hi["q"])
         mid = scf_fixed_q(q_mid)
         if mid is None or not mid["converged"]:
-            raise RuntimeError(f"inner SCF failed at q = {q_mid}")
+            # keep the best converged bracket endpoint instead of losing the
+            # whole functional (vcond hits this in the heteronuclear run)
+            aligned = False
+            print(f"  inner SCF failed at q = {q_mid:.6f}; stopping the "
+                  f"refinement at bracket width {hi['q'] - lo['q']:.2e}")
+            break
         if mid["eps_l"] - mid["eps_r"] < 0:
             lo = mid
         else:
             hi = mid
     best = min(lo, hi, key=lambda r: r["E"])
-    print(f"Converged: q* = {best['q']:.8f}, eps_L - eps_R = "
+    state = "Converged" if aligned else "Best available (alignment not refined)"
+    print(f"{state}: q* = {best['q']:.8f}, eps_L - eps_R = "
           f"{best['eps_l'] - best['eps_r']: .3e}")
     return best
 
@@ -483,8 +516,104 @@ def report(res):
     res["vhxc"] = hxc_potential(rho)
 
 
-COLORS = {"SCE": "tab:red", "LDA": "tab:green", "Hartree": "tab:blue",
-          "EXX": "tab:purple"}
+COLORS = {"SCE": "tab:red", "vcond": "tab:orange", "vresp": "tab:cyan",
+          "LDA": "tab:green", "Hartree": "tab:blue", "EXX": "tab:purple"}
+
+
+# ---------------------------------------------------------------------------
+# Schroedinger-equation check on the converged orbitals (diagnostic only)
+# ---------------------------------------------------------------------------
+CHECK_TOL = 1e-3        # acceptable |H phi / phi - eps|, and the fixed y
+                        # half-range of every check panel: the SCF acceptance
+                        # drho < 1e-6 propagates to potential errors of only
+                        # ~1e-5 (interaction kernel norm ~ 1/sqrt(b)), so an
+                        # accepted run sits well inside this band and any
+                        # visible structure marks a genuine failure
+CHECK_MASK = 1e-4       # evaluate the ratio only where |phi| > mask * max|phi|
+
+
+def schrodinger_check_data(res):
+    """H phi / phi curves for the occupied orbitals of one converged result.
+
+    Everything is rebuilt from the orbitals alone: density -> Hxc potential
+    -> H = h1 + diag(v), then the pointwise ratio (H phi) / phi.  For an
+    exact self-consistent eigenstate the ratio is flat at the orbital energy
+    wherever the orbital is non-negligible.  Must be called while the module
+    geometry matches the result (companion scripts call it inside their
+    geometry loop)."""
+    global functional
+    functional_saved = functional
+    functional = res["functional"]
+    try:
+        q = res["q"]
+        if q is None:
+            orbitals = [(r"\phi", res["orb_l"], res["eps_l"])]
+            rho = N * res["orb_l"]**2 / weights
+        else:
+            orbitals = [(r"\phi_L", res["orb_l"], res["eps_l"]),
+                        (r"\phi_R", res["orb_r"], res["eps_r"])]
+            rho = (q * res["orb_l"]**2 + (N - q) * res["orb_r"]**2) / weights
+        H = h1 + np.diag(hxc_potential(rho))
+        curves = []
+        for name, phi, eps in orbitals:
+            mask = np.abs(phi) > CHECK_MASK * np.abs(phi).max()
+            ratio = (H @ phi)[mask] / phi[mask]
+            curves.append(dict(name=name, x=x[mask], ratio=ratio, eps=eps,
+                               dev=np.max(np.abs(ratio - eps))))
+    finally:
+        functional = functional_saved
+    return curves
+
+
+def draw_check_panel(ax, res, curves):
+    """One tile of the check board: the H phi / phi curves of one result,
+    the orbital energies as dashed lines, the worst deviation in the title
+    (red if it exceeds CHECK_TOL).  The y range is pinned to eps +/-
+    CHECK_TOL: autoscale would magnify sub-tolerance noise into apparent
+    structure, whereas inside a fixed band flat means converged and any
+    visible wiggle or clipping is a deviation that actually matters."""
+    color = COLORS.get(res["functional"])
+    for c, ls in zip(curves, ("-", ":")):
+        ax.axhline(c["eps"], color='0.3', lw=0.8, ls='--')
+        ax.plot(c["x"], c["ratio"], color=color, ls=ls,
+                label=f'$H{c["name"]}/{c["name"]}$  dev {c["dev"]:.1e}')
+    ax.set_ylim(min(c["eps"] for c in curves) - CHECK_TOL,
+                max(c["eps"] for c in curves) + CHECK_TOL)
+    ax.ticklabel_format(useOffset=False, axis='y')
+    dev = max(c["dev"] for c in curves)
+    occ = ("aufbau" if res["q"] is None else f"q = {res['q']:.3f}")
+    state = "" if res["converged"] else ", SCF NOT converged"
+    ax.set_title(f'{res["functional"]} ({occ}{state})  '
+                 f'max dev {dev:.1e}',
+                 fontsize=9, color="tab:red" if dev > CHECK_TOL else "black")
+    ax.grid(alpha=0.4)
+    ax.legend(fontsize=7)
+
+
+def plot_schrodinger_check(results, show):
+    """One board with all the H phi = eps phi checks, one panel per result."""
+    ncols = min(3, len(results))
+    nrows = (len(results) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.6 * ncols, 3.4 * nrows),
+                             squeeze=False)
+    for ax in axes.ravel()[len(results):]:
+        ax.set_axis_off()
+    for ax, res in zip(axes.ravel(), results):
+        draw_check_panel(ax, res, schrodinger_check_data(res))
+        ax.set_xlim(-R - 20, R + 20)
+    for ax in axes[-1, :]:
+        ax.set_xlabel('x')
+    for ax in axes[:, 0]:
+        ax.set_ylabel(r'$H\phi/\phi$')
+    fig.suptitle(r'Schroedinger check: $H\phi/\phi$ from the rebuilt '
+                 r'Hamiltonian (flat at $\epsilon$ = converged; '
+                 rf'y range fixed to $\epsilon \pm$ {CHECK_TOL:g})', fontsize=11)
+    fig.tight_layout()
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), check_figure)
+    fig.savefig(out, dpi=150)
+    print(f"Schroedinger check board saved to {out}")
+    if show:
+        plt.show()
 
 
 def plot_comparison(results, show):
@@ -515,7 +644,11 @@ def main(show=False):
     results = []
     for functional in functionals:
         print("\n" + "=" * 70)
-        res = run()
+        try:
+            res = run()
+        except RuntimeError as exc:
+            print(f"KS-{functional} failed: {exc}")
+            continue
         report(res)
         results.append(res)
 
@@ -531,6 +664,7 @@ def main(show=False):
               f"{e_hxc:12.6f} {occ:>16}")
 
     plot_comparison(results, show)
+    plot_schrodinger_check(results, show)
 
 
 if __name__ == "__main__":

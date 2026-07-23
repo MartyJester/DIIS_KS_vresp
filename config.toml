@@ -19,8 +19,12 @@ nbPts = 600                    # number of grid points
 # L = 160.0                    # box length; default 8 * (R + 10)
 
 [functionals]
-# Hxc approximations to run, in order.  Available: "SCE", "LDA", "Hartree", "EXX".
-run = ["SCE", "LDA", "Hartree", "EXX"]
+# Hxc approximations to run, in order.
+# Available: "SCE", "vcond", "vresp", "LDA", "Hartree", "EXX".
+# "vcond" is the SCE conditional potential w(|x - f(x)|), "vresp" the SCE
+# response potential vSCE - vcond: not true Hxc potentials, run alone to
+# inspect the effect of each component of vSCE.
+run = ["SCE", "vcond", "vresp", "LDA", "Hartree", "EXX"]
 
 [scf]                          # inner DIIS SCF (fixed occupations)
 max_cycle = 300
@@ -42,6 +46,7 @@ align_tol = 1e-5               # bisection threshold on the q bracket
 [output]
 figure = "ks_comparison.png"   # comparison figure; relative paths are
                                # resolved next to main_fixed.py
+check_figure = "schrodinger_check.png"   # H*phi/phi board (diagnostic)
 
 [stretch]
 # Settings for homonuclear_stretch.py (ground state vs bond distance).
@@ -51,5 +56,6 @@ labels = ["covalent bond", "transition", "dissociated"]   # one per distance
 softening = [0.7, 0.7]         # per-well softening; identical wells = homonuclear
 depth = [1.0, 1.0]             # per-well depth
 dx = 0.2667                    # grid spacing, kept fixed while the box grows
-functionals = ["SCE", "LDA", "Hartree", "EXX"]
+functionals = ["SCE", "vcond", "vresp", "LDA", "Hartree"]
 figure = "homonuclear_stretch.png"
+check_figure = "homonuclear_stretch_check.png"   # H*phi/phi board (diagnostic)
